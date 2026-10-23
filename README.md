@@ -1,32 +1,36 @@
 # AtoZDiscordBot
-webhook for getting jobs off that platform (hiring.amazon.com) | (a to z)
 
-# Automated Job Post Monitor & Discord Webhook Alert
+Webhook alerts for jobs on hiring.amazon.com (A to Z).
 
-A lightweight, automated web-scraping script built with **Python** and **Playwright** that continuously monitors targeted job search URLs (configured out-of-the-box for portal-style hiring sites like Amazon), parses shift card parameters (such as Full-Time, Part-Time, Regular, or Seasonal), and pushes real-time alert notifications directly to a **Discord channel via Webhook**.
+One-pass Selenium script that opens the Amazon hiring search for ZIP 33545, reads each job card, and posts a Discord embed to the matching facility channel. When the card also names a shift type, it posts the same embed to that shift channel.
 
----
+## Facilities
 
-## Features
+* Grocery (UFL5)
+* Robotics (TPA4), also the fallback when a card has no facility code
+* Fulfillment (SFL4)
+* Sortation (TPA5)
+* Delivery (DTP9)
 
-* **Headless Browser Automation:** Utilizes Playwright with anti-bot detection flags (`--disable-blink-features=AutomationControlled`) to reliably query modern dynamic web apps.
-* **Granular Shift Filtering:** Differentiates between shift types (Full-Time, Part-Time, Flex) and employment durations (Regular vs. Seasonal).
-* **Smart Priority Badging:** Tags high-value listings with custom visual markers and priority alerts.
-* **Built-in Verification Loop:** Once a listing is found, it waits 30 seconds and re-scans the URL to confirm whether the position is still active before sending a follow-up alert.
-* **Discord Integration:** Sends cleanly formatted markdown alerts straight to your server.
+## Shift channels
 
----
+Reduced Time, Part Time, Full Time, and Flex Time.
 
-## Prerequisites
+## Setup
 
-* **Python 3.8+** installed on your machine.
-* `pip` package manager.
+Python 3.8+ and Google Chrome are required.
 
----
+```bash
+pip install -r requirements.txt
+cp config.example.json config.json
+```
 
-## Installation & Setup
+Put each Discord webhook in `config.json`. That file stays on your machine. `config.example.json` has the facility names, role ids, and ZIP, with the webhook fields left blank.
 
-1. **Clone or download** this repository/script.
-2. **Install dependencies:**
-   ```bash
-   pip install requests playwright
+Run one check:
+
+```bash
+python atozjobsdiscord.py
+```
+
+Set `ATOZ_CONFIG` if the config file lives somewhere other than `config.json` next to the script.
