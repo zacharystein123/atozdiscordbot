@@ -1,0 +1,50 @@
+{
+  "url": "https://hiring.amazon.com/app#/jobSearch?zipcode=33545",
+  "zipcode": "33545",
+  "default_site": "TPA4",
+  "sites": {
+    "UFL5": {
+      "name": "Grocery (UFL5)",
+      "webhook": "",
+      "role_id": "1561840316137340958"
+    },
+    "TPA4": {
+      "name": "Robotics (TPA4)",
+      "webhook": "",
+      "role_id": "1561840295824597015"
+    },
+    "SFL4": {
+      "name": "Fulfillment (SFL4)",
+      "webhook": "",
+      "role_id": "1561840335481737277"
+    },
+    "TPA5": {
+      "name": "Sortation (TPA5)",
+      "webhook": "",
+      "role_id": "1561840358931832932"
+    },
+    "DTP9": {
+      "name": "Delivery (DTP9)",
+      "webhook": "",
+      "role_id": "1561840404813320306"
+    }
+  },
+  "shifts": {
+    "Reduced Time": {
+      "webhook": "",
+      "role_id": "1561840144913399869"
+    },
+    "Part Time": {
+      "webhook": "",
+      "role_id": "1561840123266470038"
+    },
+    "Full Time": {
+      "webhook": "",
+      "role_id": "1561840094460125316"
+    },
+    "Flex Time": {
+      "webhook": "",
+      "role_id": "1561840070539874456"
+    }
+  }
+}

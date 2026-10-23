@@ -1,219 +1,151 @@
+import json
+import os
+import sys
 import time
+from pathlib import Path
+
 import requests
-from playwright.sync_api import sync_playwright
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
 
-# --- CONFIGURATION ---
-DISCORD_WEBHOOK_URL = "YOUR_DISCORD_WEBHOOK_URL_HERE"
+ROOT = Path(__file__).resolve().parent
+CONFIG_PATH = Path(os.environ.get("ATOZ_CONFIG", ROOT / "config.json"))
 
-# Target postal search zones (Replace postal codes and URLs with your target areas)
-TARGET_LOCATIONS = {
-    "General Area (12345)": "https://hiring.amazon.com/app#/jobSearch?query=&postal=12345&locale=en-US",
-    "Location One (Area A)": "https://hiring.amazon.com/app#/jobSearch?query=&postal=11111&locale=en-US",
-    "Location Two (Area B)": "https://hiring.amazon.com/app#/jobSearch?query=&postal=22222&locale=en-US",
-    "Location Three (Area C)": "https://hiring.amazon.com/app#/jobSearch?query=&postal=33333&locale=en-US"
-} 
 
-# Keywords to watch for on the pages (Leave blank or add specific job titles/roles)
-TARGET_TEXTS = ["Keyword One", "Keyword Two", "Keyword Three"]
+def load_config():
+    if not CONFIG_PATH.is_file():
+        sys.exit(
+            f"Missing {CONFIG_PATH}. Copy config.example.json to config.json and add your Discord webhooks."
+        )
+    with CONFIG_PATH.open() as handle:
+        config = json.load(handle)
+    required = ("url", "zipcode", "default_site", "sites", "shifts")
+    missing = [key for key in required if key not in config]
+    if missing:
+        sys.exit(f"{CONFIG_PATH} is missing: {', '.join(missing)}")
+    if config["default_site"] not in config["sites"]:
+        sys.exit(f"{CONFIG_PATH} default_site {config['default_site']!r} is not in sites.")
+    return config
 
-NO_JOB_INDICATORS = [
-    "no results", 
-    "no jobs available", 
-    "check back later", 
-    "currently no open", 
-    "no open positions"
-]
 
-def send_discord_alert(message_body):
+CONFIG = load_config()
+URL = CONFIG["url"]
+ZIPCODE = CONFIG["zipcode"]
+SITE_MAPPING = CONFIG["sites"]
+SHIFT_MAPPING = CONFIG["shifts"]
+DEFAULT_SITE = SITE_MAPPING[CONFIG["default_site"]]
+
+
+def send_to_discord(webhook_url, content_msg, embed_data):
+    if not webhook_url:
+        print("Skipped Discord alert because the webhook is empty.")
+        return
     payload = {
-        "content": message_body
+        "content": content_msg,
+        "embeds": [embed_data],
+        "allowed_mentions": {"parse": ["roles"]}
     }
     try:
-        response = requests.post(DISCORD_WEBHOOK_URL, json=payload)
+        response = requests.post(webhook_url, json=payload)
         if response.status_code in [200, 204]:
-            print("Discord notification sent successfully!")
+            print("Successfully dispatched sorted job embed.")
         else:
-            print(f"Failed to send Discord message: {response.text}")
+            print(f"Webhook failed with status {response.status_code}: {response.text}")
     except Exception as e:
-        print(f"Error sending Discord alert: {e}")
+        print(f"Error sending webhook: {e}")
 
-def scan_urls(urls_to_check):
-    """Helper function to scan specific URLs and extract precise Shift Type and Duration matching portal cards."""
-    matched_listings = []
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=True,
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                "--disable-infobars",
-                "--no-sandbox",
-                "--disable-dev-shm-usage"
-            ]
+
+def parse_and_sort_jobs():
+    options = webdriver.ChromeOptions()
+    # If it still finds nothing, try commenting out options.add_argument("--headless")
+    # so you can see the browser open up and watch what it loads.
+    options.add_argument("--headless=new")
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--start-maximized")
+    options.add_argument("user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
+
+    driver = webdriver.Chrome(options=options)
+
+    print(f"Fetching Amazon hiring portal for ZIP {ZIPCODE}...")
+    driver.get(URL)
+
+    # Wait up to 10 seconds for the app container or listings to load
+    try:
+        WebDriverWait(driver, 10).until(
+            lambda d: len(d.find_elements(By.TAG_NAME, "jb-job-card")) > 0 or
+                      len(d.find_elements(By.CLASS_NAME, "job-card")) > 0 or
+                      len(d.find_elements(By.CSS_SELECTOR, "[class*='job']")) > 0
         )
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            viewport={"width": 1920, "height": 1080}
-        )
-        page = context.new_page()
-        page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+    except Exception:
+        print("Timed out waiting for job elements to render.")
 
-        for location_name, url in urls_to_check.items():
-            try:
-                print(f"Scanning {location_name}...")
-                page.goto(url, timeout=60000, wait_until="domcontentloaded")
-                
-                try:
-                    page.wait_for_selector("body", timeout=5000)
-                except:
-                    pass
-                
-                page_text = page.inner_text("body")
-                lower_page_text = page_text.lower()
-                
-                if any(phrase in lower_page_text for phrase in NO_JOB_INDICATORS):
-                    print(f"-> {location_name}: Page indicates explicit 'No Jobs Available'. Skipping.")
-                    time.sleep(5)
-                    continue
+    print(f"Current Page Title: {driver.title}")
 
-                # STRICT CHECK: Only proceed if actual target keywords match or explicit shift card details are present.
-                matched_keywords = [kw for kw in TARGET_TEXTS if kw.lower() in lower_page_text]
-                
-                # Precise Shift Types (Full Time, Part Time, Flex Time)
-                is_full_time = "full time" in lower_page_text or "full-time" in lower_page_text
-                is_part_time = "part time" in lower_page_text or "part-time" in lower_page_text
-                is_flex = "flex time" in lower_page_text or "flex" in lower_page_text
-                
-                # Precise Durations (Regular, Seasonal)
-                is_regular = "duration: regular" in lower_page_text or "regular" in lower_page_text
-                is_seasonal = "duration: seasonal" in lower_page_text or "seasonal" in lower_page_text
+    # Broaden selectors to catch React dynamic elements
+    listings = driver.find_elements(By.TAG_NAME, "jb-job-card")
+    if not listings:
+        listings = driver.find_elements(By.CLASS_NAME, "job-card")
+    if not listings:
+        # Fallback to generic card-like structures if Amazon updated their class names
+        listings = driver.find_elements(By.CSS_SELECTOR, "div[class*='Card'], div[class*='listing'], article")
 
-                # Avoid false positives: If no explicit target keywords AND no concrete shift types/durations are found, skip.
-                if not matched_keywords and not (is_full_time or is_part_time or is_flex or is_regular or is_seasonal):
-                    print(f"-> {location_name}: No explicit keywords or shifts found. Skipping.")
-                    time.sleep(5)
-                    continue
+    print(f"Found {len(listings)} raw listing elements.")
 
-                if not matched_keywords:
-                    matched_keywords = ["Active Shift Card Found"]
+    if len(listings) == 0:
+        print("Debug snippet of page body text:")
+        body_text = driver.find_element(By.TAG_NAME, "body").text[:300]
+        print(body_text)
 
-                # Build explicit descriptions matching card elements
-                type_labels = []
-                if is_full_time:
-                    type_labels.append("Full Time")
-                if is_part_time:
-                    type_labels.append("Part Time")
-                if is_flex:
-                    type_labels.append("Flex Time")
-                
-                duration_labels = []
-                if is_regular:
-                    duration_labels.append("Regular")
-                if is_seasonal:
-                    duration_labels.append("Seasonal")
+    for item in listings:
+        text = item.text.strip()
+        if not text:
+            continue
 
-                shift_type_str = ", ".join(type_labels) if type_labels else "Not Specified"
-                duration_str = ", ".join(duration_labels) if duration_labels else "Not Specified"
+        # Detect Site
+        matched_site = None
+        for code, info in SITE_MAPPING.items():
+            if code in text.upper():
+                matched_site = info
+                break
 
-                # Priority logic: Regular duration or Full/Part time gets priority flag
-                is_priority = is_regular or is_full_time or is_part_time
+        # Detect Shift Type
+        matched_shift = None
+        for shift_name, info in SHIFT_MAPPING.items():
+            if shift_name.lower() in text.lower():
+                matched_shift = info
+                break
 
-                if is_regular and is_full_time:
-                    badge = "🔥 [FULL TIME - REGULAR]"
-                elif is_regular and is_part_time:
-                    badge = "⚡ [PART TIME - REGULAR]"
-                elif is_full_time:
-                    badge = "🔥 [FULL TIME]"
-                elif is_regular:
-                    badge = "🔥 [REGULAR DURATION]"
-                else:
-                    badge = "📌 [JOB FOUND]"
+        site_name = matched_site["name"] if matched_site else "General Warehouse"
+        site_webhook = matched_site["webhook"] if matched_site else DEFAULT_SITE["webhook"]
+        site_role_id = matched_site["role_id"] if matched_site else DEFAULT_SITE["role_id"]
 
-                matched_listings.append({
-                    "location": location_name,
-                    "site": ", ".join(matched_keywords),
-                    "badge": badge,
-                    "shift_type": shift_type_str,
-                    "duration": duration_str,
-                    "url": url,
-                    "is_priority": is_priority,
-                    "is_full_time": is_full_time,
-                    "is_regular": is_regular
-                })
-                
-                time.sleep(5) # 5-second human-paced buffer between URL hops
-                            
-            except Exception as e:
-                print(f"Error checking {location_name}: {e}")
+        shift_webhook = matched_shift["webhook"] if matched_shift else None
+        shift_role_id = matched_shift["role_id"] if matched_shift else None
 
-        browser.close()
-    return matched_listings
+        embed = {
+            "title": f"🚨 New Amazon Job Match ({site_name})",
+            "description": f"```text\n{text[:1000]}\n```",
+            "color": 16734296,
+            "fields": [
+                {"name": "Facility", "value": site_name, "inline": True},
+                {"name": "ZIP Code", "value": ZIPCODE, "inline": True}
+            ],
+            "url": URL
+        }
 
-def check_for_jobs():
-    print("Checking hiring pages (Precise Mapping)...")
-    all_matched_listings = scan_urls(TARGET_LOCATIONS)
+        site_ping = f"<@&{site_role_id}>"
+        send_to_discord(site_webhook, site_ping, embed)
 
-    if all_matched_listings:
-        unique_listings = {f"{x['site']}-{x['shift_type']}-{x['duration']}-{x['location']}": x for x in all_matched_listings}.values()
-        
-        has_priority = any(item['is_priority'] for item in unique_listings)
-        
-        # Customize or remove this specific trigger check if you change your target zone name
-        preferred_target_regular = any(
-            item['is_regular'] and "location one" in item['location'].lower() 
-            for item in unique_listings
-        )
+        if shift_webhook and shift_role_id and shift_webhook != site_webhook:
+            shift_ping = f"<@&{shift_role_id}>"
+            send_to_discord(shift_webhook, shift_ping, embed)
 
-        if preferred_target_regular:
-            header = "🚨🎯 **[PREFERRED TARGET REGULAR ACQUIRED] CANCEL OLD & APPLY HERE!**\n\n"
-        elif has_priority:
-            header = "🚨🔥 **[PRIORITY MATCH FOUND] CHECK DETAILS BELOW!**\n\n"
-        else:
-            header = "🚨 **[ALERT] Shift Opening Found!**\n\n"
-        
-        alert_msg = header
-        for item in unique_listings:
-            alert_msg += (
-                f"**Zone:** {item['location']}\n"
-                f"**Match:** {item['site']}\n"
-                f"**Status:** {item['badge']}\n"
-                f"**Type:** {item['shift_type']}\n"
-                f"**Duration:** {item['duration']}\n"
-                f"**Link:** {item['url']}\n\n"
-            )
-        
-        if preferred_target_regular:
-            alert_msg += "⚡ **ACTION REQUIRED:** Review current application status and lock down the target location!\n\n"
+    driver.quit()
+    print("Job check and sorting cycle complete.")
 
-        print(alert_msg)
-        send_discord_alert(alert_msg.strip())
-
-        # --- 30-SECOND FOLLOW-UP VERIFICATION ---
-        print("Job found! Waiting 30 seconds to re-verify if still active...")
-        time.sleep(30)
-
-        matched_locations_dict = {item['location']: item['url'] for item in unique_listings}
-        recheck_listings = scan_urls(matched_locations_dict)
-
-        if recheck_listings:
-            print("Jobs still active after 30 seconds. Sending follow-up ping...")
-            followup_msg = "⏰ **[FOLLOW-UP REMINDER] Shift is still up! Go lock it down!**\n\n"
-            for item in recheck_listings:
-                followup_msg += (
-                    f"🏆 **Zone:** {item['location']}\n"
-                    f"**Match:** {item['site']}\n"
-                    f"**Status:** {item['badge']}\n"
-                    f"**Type:** {item['shift_type']}\n"
-                    f"**Duration:** {item['duration']}\n"
-                    f"**Link:** {item['url']}\n\n"
-                )
-            send_discord_alert(followup_msg.strip())
-        else:
-            print("Jobs were taken or disappeared within 30 seconds. Skipping follow-up.")
-    else:
-        print("Checked all zones: No matching listings found.")
 
 if __name__ == "__main__":
-    print("Starting Precision Card-Mapped Job Monitor (Discord Webhook Edition)...")
-    while True:
-        check_for_jobs()
-        time.sleep(150)
+    parse_and_sort_jobs()
